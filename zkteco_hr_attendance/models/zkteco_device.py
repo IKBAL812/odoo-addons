@@ -38,19 +38,21 @@ class ZKTecoDevice(models.Model):
         ],
         default="draft",
     )
+    last_poll_date = fields.Datetime(readonly=True)
+    last_error = fields.Text(readonly=True)
 
     def action_open_log(self):
+        """Open the device punch logs filtered to this device."""
         self.ensure_one()
-        # TODO:
-        # action = self.env["ir.actions.actions"]._for_xml_id(
-        #     "zkteco_hr_attendance.action_zkteco_device_log"
-        # )
-        # action["domain"] = [("device_id", "=", self.id)]
-        # action["context"] = {
-        #     "default_device_id": self.id,
-        #     "search_default_device_id": self.id,
-        # }
-        # return action
+        action = self.env["ir.actions.act_window"]._for_xml_id(
+            "zkteco_hr_attendance.action_zkteco_device_log"
+        )
+        action["domain"] = [("device_id", "=", self.id)]
+        action["context"] = {
+            "default_device_id": self.id,
+            "search_default_device_id": self.id,
+        }
+        return action
 
     def action_test_connection(self):
         self.ensure_one()
@@ -71,6 +73,7 @@ class ZKTecoDevice(models.Model):
             conn.disconnect()
 
             self.state = "connected"
+            self.last_error = False
             # If connection is successful, return a success message
             self.env["bus.bus"]._sendone(
                 self.env.user.partner_id,
@@ -84,6 +87,7 @@ class ZKTecoDevice(models.Model):
             )
         except Exception as e:
             self.state = "error"
+            self.last_error = str(e)
             # If there is an error, return an error message
             self.env["bus.bus"]._sendone(
                 self.env.user.partner_id,
@@ -100,13 +104,14 @@ class ZKTecoDevice(models.Model):
     def get_all_device_attendance(self):
         devices = self.search([("state", "=", "connected")])
         for device in devices:
-            device.action_get_attendance()
+            device.with_context(zkteco_from_cron=True).action_get_attendance()
         return True
 
     def action_get_attendance(self):
         self.ensure_one()
         HrAttandance = self.env["hr.attendance"]
         ZKTecoDeviceLog = self.env["zkteco.device.log"]
+        self.last_poll_date = fields.Datetime.now()
         try:
             # Create a ZK instance with the device's IP address and port
             zk = ZK(
@@ -136,5 +141,26 @@ class ZKTecoDevice(models.Model):
 
             conn.disconnect()
             self.state = "connected"
+            self.last_error = False
+            if not self.env.context.get("zkteco_from_cron"):
+                self.env["bus.bus"]._sendone(
+                    self.env.user.partner_id,
+                    "simple_notification",
+                    {
+                        "type": "success",
+                        "message": _("Attendance fetched successfully"),
+                    },
+                )
         except Exception as e:
             _logger.error("Error getting attendance: %s", str(e))
+            self.state = "error"
+            self.last_error = str(e)
+            if not self.env.context.get("zkteco_from_cron"):
+                self.env["bus.bus"]._sendone(
+                    self.env.user.partner_id,
+                    "simple_notification",
+                    {
+                        "type": "danger",
+                        "message": _("Attendance Fetch Failed: %s") % str(e),
+                    },
+                )

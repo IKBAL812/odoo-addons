@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<odoo>
+    <record id="zkteco_device_log_tree" model="ir.ui.view">
+        <field name="name">zkteco.device.log.tree</field>
+        <field name="model">zkteco.device.log</field>
+        <field name="arch" type="xml">
+            <tree create="false" edit="false">
+                <field name="device_id" />
+                <field name="log_date" />
+                <field name="zkteco_uid" />
+                <field name="zkteco_user_id" />
+            </tree>
+        </field>
+    </record>
+
+    <record id="zkteco_device_log_search" model="ir.ui.view">
+        <field name="name">zkteco.device.log.search</field>
+        <field name="model">zkteco.device.log</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="device_id" />
+                <field name="zkteco_user_id" />
+                <filter
+                    name="group_by_device"
+                    string="Device"
+                    context="{'group_by': 'device_id'}"
+                />
+            </search>
+        </field>
+    </record>
+
+    <record id="action_zkteco_device_log" model="ir.actions.act_window">
+        <field name="name">ZKTeco Device Logs</field>
+        <field name="res_model">zkteco.device.log</field>
+        <field name="view_mode">tree</field>
+        <field name="view_id" ref="zkteco_device_log_tree" />
+        <field name="search_view_id" ref="zkteco_device_log_search" />
+    </record>
+</odoo>
