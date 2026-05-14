@@ -40,6 +40,7 @@ class ZKTecoDevice(models.Model):
     )
     last_poll_date = fields.Datetime(readonly=True)
     last_error = fields.Text(readonly=True)
+    last_synced_punch = fields.Datetime(readonly=True)
 
     def action_open_log(self):
         """Open the device punch logs filtered to this device."""
@@ -53,6 +54,20 @@ class ZKTecoDevice(models.Model):
             "search_default_device_id": self.id,
         }
         return action
+
+    def action_reset_watermark(self):
+        """Clear the sync high-water mark so the next poll re-imports the full
+        device buffer. Existing dedup prevents duplicate rows."""
+        self.ensure_one()
+        self.last_synced_punch = False
+        self.env["bus.bus"]._sendone(
+            self.env.user.partner_id,
+            "simple_notification",
+            {
+                "type": "success",
+                "message": _("Watermark reset; the next poll will re-import."),
+            },
+        )
 
     def action_test_connection(self):
         self.ensure_one()
@@ -131,17 +146,33 @@ class ZKTecoDevice(models.Model):
             difference = (system_time - zktime).total_seconds()
             attendance_records = conn.get_attendance()
 
-            # Process attendance records
-            for record in attendance_records:
-                ZKTecoDeviceLog.create_log_record(data=record, device_id=self)
+            # Capture the high-water mark from raw device timestamps before the
+            # loop mutates record.timestamp below.
+            max_raw_timestamp = max(
+                (record.timestamp for record in attendance_records),
+                default=False,
+            )
 
-                # Add the difference to the record's timestamp
-                record.timestamp = record.timestamp + timedelta(seconds=difference)
+            # Process attendance records, skipping any already synced.
+            for record in attendance_records:
+                # Correct device clock drift to get the real punch time.
+                adjusted_timestamp = record.timestamp + timedelta(seconds=difference)
+                if (
+                    self.last_synced_punch
+                    and adjusted_timestamp < self.last_synced_punch
+                ):
+                    continue
+                ZKTecoDeviceLog.create_log_record(data=record, device_id=self)
+                record.timestamp = adjusted_timestamp
                 HrAttandance._process_zkteco_attendance_data(self, record)
 
             conn.disconnect()
             self.state = "connected"
             self.last_error = False
+            if max_raw_timestamp:
+                self.last_synced_punch = max_raw_timestamp + timedelta(
+                    seconds=difference
+                )
             if not self.env.context.get("zkteco_from_cron"):
                 self.env["bus.bus"]._sendone(
                     self.env.user.partner_id,

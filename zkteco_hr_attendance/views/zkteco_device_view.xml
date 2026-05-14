@@ -19,6 +19,12 @@
                         string="Get Attendance"
                         groups="hr_attendance.group_hr_attendance_manager"
                     />
+                    <button
+                        name="action_reset_watermark"
+                        type="object"
+                        string="Reset Watermark"
+                        groups="base.group_no_one"
+                    />
                     <field name="state" widget="statusbar" />
                 </header>
                 <sheet>
@@ -41,6 +47,7 @@
                     </group>
                     <group string="Polling Status">
                         <field name="last_poll_date" />
+                        <field name="last_synced_punch" />
                         <field
                             name="last_error"
                             attrs="{'invisible': [('last_error', '=', False)]}"
