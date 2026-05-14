@@ -12,9 +12,17 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+import logging
 from datetime import timedelta
 
 from odoo import api, fields, models
+
+_logger = logging.getLogger(__name__)
+
+# Longest plausible single shift including overtime. A punch beyond this gap
+# from an open check-in is treated as a forgotten check-out, not a shift close.
+# Commit 6 may promote this to a res.config.settings field (keep as fallback).
+MAX_SHIFT_GAP_HOURS = 14
 
 
 class HrAttendance(models.Model):
@@ -43,6 +51,39 @@ class HrAttendance(models.Model):
     attendance_day = fields.Date(
         compute="_compute_attendance_day",
         store=True,
+    )
+
+    zkteco_entry_punch = fields.Integer(
+        string="ZKTeco Entry Punch",
+        help="Raw 'punch' value reported by the device for the check-in "
+        "scan. Audit-only: not used in pairing logic.",
+    )
+
+    zkteco_exit_punch = fields.Integer(
+        string="ZKTeco Exit Punch",
+        help="Raw 'punch' value reported by the device for the check-out "
+        "scan. Audit-only: not used in pairing logic.",
+    )
+
+    zkteco_entry_status = fields.Integer(
+        string="ZKTeco Entry Status",
+        help="Raw 'status' value reported by the device for the check-in "
+        "scan. Audit-only: not used in pairing logic.",
+    )
+
+    zkteco_exit_status = fields.Integer(
+        string="ZKTeco Exit Status",
+        help="Raw 'status' value reported by the device for the check-out "
+        "scan. Audit-only: not used in pairing logic.",
+    )
+
+    is_dangling = fields.Boolean(
+        string="Dangling Attendance",
+        default=False,
+        index=True,
+        help="Set when this record was auto-closed because the employee "
+        "never scanned a check-out. Cleared automatically when a real "
+        "check-out is recorded.",
     )
 
     @api.depends("check_in", "check_out")
@@ -98,14 +139,36 @@ class HrAttendance(models.Model):
 
     def _process_zkteco_attendance_data(self, device_id, data):
         """
-        Process ZKTeco attendance data and create hr.attendance records.
-        :param data: Single attandance record from ZKTeco device.
+        Process a single ZKTeco punch and maintain hr.attendance pairs.
+
+        Pairing is device-independent and does NOT branch on ``data.punch``:
+        face-only terminals frequently emit punch=0 for every scan, so the
+        raw ``punch``/``status`` values are captured into audit fields only.
+
+        Logic:
+          * Resolve the employee; skip duplicates.
+          * Find the employee's most recent OPEN record (no check_out),
+            regardless of day -- this is what makes night shifts work.
+          * If an open record exists and the new punch is within
+            ``MAX_SHIFT_GAP_HOURS`` of its check_in, the punch CLOSES it.
+          * If the gap is larger, the open record is a forgotten
+            check-out: auto-close it at zero duration, flag it
+            ``is_dangling``, then open a fresh check-in for this punch.
+          * If no open record exists, open a new check-in.
+
+        Known limitation: with three scans (in / out / accidental re-scan),
+        the third opens a new record that dangles until a later punch.
+        This is inherent to elapsed-time pairing without a trustworthy
+        device direction flag.
+
+        :param device_id: zkteco.device recordset (single).
+        :param data: pyzk Attendance object (.user_id, .timestamp,
+            .status, .punch, .uid); ``timestamp`` is already drift-corrected.
+        :return: True if a record was created or updated, False otherwise.
         """
-        record_day = data.timestamp.date()
         employee_id = self.env["hr.employee"].search(
             [("zkteco_user_id", "=", int(data.user_id))], limit=1
         )
-
         if not employee_id:
             return False
 
@@ -113,34 +176,83 @@ class HrAttendance(models.Model):
             # If a duplicate record exists, do not create a new one
             return False
 
-        active_checkin_record = self.search(
+        open_record = self.search(
             [
-                ("attendance_day", "=", record_day),
                 ("employee_id", "=", employee_id.id),
-                ("check_out", "=", False),
                 ("check_in", "!=", False),
+                ("check_out", "=", False),
             ],
+            order="check_in desc",
             limit=1,
         )
-        if active_checkin_record:
-            # If there is an active check-in record,
-            # update it with the new check-out time
-            active_checkin_record.write(
-                {
-                    "check_out": data.timestamp,
-                    "zkteco_exit_device_id": device_id.id,
-                    "zkteco_exit_uid": data.uid,
-                }
-            )
-        else:
-            # If no active check-in record, create a new attendance record
-            self.create(
-                {
-                    "employee_id": employee_id.id,
-                    "check_in": data.timestamp,
-                    "zkteco_entry_device_id": device_id.id,
-                    "zkteco_entry_uid": data.uid,
-                }
-            )
 
+        if open_record:
+            if data.timestamp <= open_record.check_in:
+                # Punches are processed chronologically (watermarked), so a
+                # punch at or before the open check-in should not happen.
+                _logger.warning(
+                    "ZKTeco: punch %s at %s for employee %s is not after "
+                    "the open check-in at %s; skipping to avoid corrupting "
+                    "data.",
+                    data.uid,
+                    data.timestamp,
+                    employee_id.id,
+                    open_record.check_in,
+                )
+                return False
+
+            gap = data.timestamp - open_record.check_in
+            if gap <= timedelta(hours=MAX_SHIFT_GAP_HOURS):
+                # Normal pairing: this punch closes the open shift
+                # (covers midnight-crossing night shifts).
+                open_record.write(
+                    {
+                        "check_out": data.timestamp,
+                        "zkteco_exit_device_id": device_id.id,
+                        "zkteco_exit_uid": data.uid,
+                        "zkteco_exit_punch": data.punch,
+                        "zkteco_exit_status": data.status,
+                    }
+                )
+                return True
+
+            # Forgotten check-out: auto-close the stale record at zero
+            # duration and flag it BEFORE opening a new one, so the core
+            # `_check_validity` constraint never sees two open records.
+            open_record.write(
+                {
+                    "check_out": open_record.check_in,
+                    "is_dangling": True,
+                }
+            )
+            open_record.flush_recordset(["check_out", "is_dangling"])
+
+        self.create(
+            {
+                "employee_id": employee_id.id,
+                "check_in": data.timestamp,
+                "zkteco_entry_device_id": device_id.id,
+                "zkteco_entry_uid": data.uid,
+                "zkteco_entry_punch": data.punch,
+                "zkteco_entry_status": data.status,
+            }
+        )
         return True
+
+    def write(self, vals):
+        """
+        Auto-clear ``is_dangling`` when a real check-out is recorded.
+
+        When HR corrects an auto-closed record by giving it a genuine
+        check_out (different from check_in), the dangling flag is no
+        longer meaningful and is cleared. The inner write targets only
+        ``is_dangling`` via ``super()`` so it cannot recurse.
+        """
+        res = super().write(vals)
+        if "check_out" in vals:
+            resolved = self.filtered(
+                lambda a: a.is_dangling and a.check_out and a.check_out != a.check_in
+            )
+            if resolved:
+                super(HrAttendance, resolved).write({"is_dangling": False})
+        return res

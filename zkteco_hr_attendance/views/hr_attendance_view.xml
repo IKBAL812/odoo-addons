@@ -8,7 +8,27 @@
             <field name="employee_id" position="after">
                 <field name="zkteco_entry_device_id" />
                 <field name="zkteco_exit_device_id" />
+                <field name="is_dangling" optional="show" />
+                <field name="zkteco_entry_punch" optional="hide" />
+                <field name="zkteco_exit_punch" optional="hide" />
+                <field name="zkteco_entry_status" optional="hide" />
+                <field name="zkteco_exit_status" optional="hide" />
             </field>
+        </field>
+    </record>
+
+    <record id="hr_attendance_zkteco_view_filter" model="ir.ui.view">
+        <field name="name">hr.attendance.zkteco.search</field>
+        <field name="model">hr.attendance</field>
+        <field name="inherit_id" ref="hr_attendance.hr_attendance_view_filter" />
+        <field name="arch" type="xml">
+            <filter name="nocheckout" position="after">
+                <filter
+                    name="zkteco_dangling"
+                    string="Dangling"
+                    domain="[('is_dangling', '=', True)]"
+                />
+            </filter>
         </field>
     </record>
 </odoo>
