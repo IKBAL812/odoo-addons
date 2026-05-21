@@ -1,3 +1,4 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_zkteco_device,access_zkteco_device,model_zkteco_device,hr_attendance.group_hr_attendance_manager,1,1,1,1
 access_zkteco_device_log,access_zkteco_device_log,model_zkteco_device_log,hr_attendance.group_hr_attendance_manager,1,1,1,1
+access_zkteco_device_user,access_zkteco_device_user,model_zkteco_device_user,hr_attendance.group_hr_attendance_manager,1,1,1,1

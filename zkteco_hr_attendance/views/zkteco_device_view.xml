@@ -20,6 +20,12 @@
                         groups="hr_attendance.group_hr_attendance_manager"
                     />
                     <button
+                        name="action_fetch_users"
+                        type="object"
+                        string="Fetch Users"
+                        groups="hr_attendance.group_hr_attendance_manager"
+                    />
+                    <button
                         name="action_reset_watermark"
                         type="object"
                         string="Reset Watermark"
@@ -36,6 +42,14 @@
                             class="oe_stat_button"
                             icon="fa-bars"
                         />
+                        <button
+                            name="action_open_users"
+                            type="object"
+                            class="oe_stat_button"
+                            icon="fa-users"
+                        >
+                            <field name="user_count" widget="statinfo" string="Users" />
+                        </button>
                     </div>
                     <group>
                         <group>
@@ -43,6 +57,7 @@
                             <field name="ip_address" />
                             <field name="port" />
                             <field name="password" />
+                            <field name="allow_user_sync" />
                         </group>
                     </group>
                     <group string="Polling Status">

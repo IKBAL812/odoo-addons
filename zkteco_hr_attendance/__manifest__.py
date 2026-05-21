@@ -17,6 +17,7 @@
         "views/hr_attendance_view.xml",
         "views/zkteco_device_view.xml",
         "views/zkteco_device_log_view.xml",
+        "views/zkteco_device_user_view.xml",
     ],
     "installable": True,
 }

@@ -41,6 +41,34 @@ class ZKTecoDevice(models.Model):
     last_poll_date = fields.Datetime(readonly=True)
     last_error = fields.Text(readonly=True)
     last_synced_punch = fields.Datetime(readonly=True)
+    allow_user_sync = fields.Boolean(
+        default=False,
+        help="When off, creating/editing/deleting device users in Odoo stays "
+        "local and is NOT pushed to the terminal. Fetch is always allowed. "
+        "Keep off on test databases.",
+    )
+    user_count = fields.Integer(compute="_compute_user_count")
+
+    def _compute_user_count(self):
+        data = self.env["zkteco.device.user"].read_group(
+            [("device_id", "in", self.ids)], ["device_id"], ["device_id"]
+        )
+        counts = {row["device_id"][0]: row["device_id_count"] for row in data}
+        for device in self:
+            device.user_count = counts.get(device.id, 0)
+
+    def _get_connection(self):
+        """Build and open a pyzk connection for this device."""
+        self.ensure_one()
+        zk = ZK(
+            self.ip_address,
+            port=self.port,
+            timeout=5,
+            password=self.password or 0,
+            force_udp=False,
+            ommit_ping=True,
+        )
+        return zk.connect()
 
     def action_open_log(self):
         """Open the device punch logs filtered to this device."""
@@ -54,6 +82,50 @@ class ZKTecoDevice(models.Model):
             "search_default_device_id": self.id,
         }
         return action
+
+    def action_open_users(self):
+        """Open the device users filtered to this device."""
+        self.ensure_one()
+        action = self.env["ir.actions.act_window"]._for_xml_id(
+            "zkteco_hr_attendance.action_zkteco_device_user"
+        )
+        action["domain"] = [("device_id", "=", self.id)]
+        action["context"] = {
+            "default_device_id": self.id,
+            "search_default_device_id": self.id,
+        }
+        return action
+
+    def action_fetch_users(self):
+        """Fetch the user list from the device into Odoo (read-only)."""
+        self.ensure_one()
+        DeviceUser = self.env["zkteco.device.user"]
+        try:
+            conn = self._get_connection()
+            users = conn.get_users()
+            conn.disconnect()
+        except Exception as e:
+            self.last_error = str(e)
+            self.env["bus.bus"]._sendone(
+                self.env.user.partner_id,
+                "simple_notification",
+                {
+                    "type": "danger",
+                    "message": _("User Fetch Failed: %s") % str(e),
+                },
+            )
+            return
+        self.last_error = False
+        for zk_user in users:
+            DeviceUser._sync_from_device(self, zk_user)
+        self.env["bus.bus"]._sendone(
+            self.env.user.partner_id,
+            "simple_notification",
+            {
+                "type": "success",
+                "message": _("%s users fetched") % len(users),
+            },
+        )
 
     def action_reset_watermark(self):
         """Clear the sync high-water mark so the next poll re-imports the full
