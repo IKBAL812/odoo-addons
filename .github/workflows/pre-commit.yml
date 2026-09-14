@@ -1,3 +1,4 @@
+# Temporary CI audit: exercise the unchanged 16.0 baseline.
 name: pre-commit
 
 on:
